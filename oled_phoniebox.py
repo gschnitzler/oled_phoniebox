@@ -16,6 +16,35 @@ import sys
 import signal
 import configparser
 import math
+import RPi.GPIO as GPIO
+
+# GPIO16 mutes the power stage.
+# GPIO26 shuts down the power stage.
+# $ raspi-gpio get | egrep '16|26'
+# GPIO 16: level=1 fsel=0 func=INPUT
+# GPIO 26: level=1 fsel=0 func=INPUT
+# off
+# raspi-gpio set 16 op # output
+# raspi-gpio set 26 op
+# on
+# raspi-gpio set 26 ip
+# raspi-gpio set 16 ip # input
+
+GPIO.setmode(GPIO.BCM)
+
+# if the pins are not configured, do nothing
+def disable_hifiberry():
+    if "mute" in config["HIFIBERRY"] and "power" in config["HIFIBERRY"]:
+        GPIO.setup(config["HIFIBERRY"]["mute"], GPIO.OUT)
+        sleep(0.5)
+        GPIO.setup(config["HIFIBERRY"]["power"], GPIO.OUT)
+
+
+def enable_hifiberry():
+    if "mute" in config["HIFIBERRY"] and "power" in config["HIFIBERRY"]:
+        GPIO.setup(config["HIFIBERRY"]["power"], GPIO.IN)
+        sleep(0.5)
+        GPIO.setup(config["HIFIBERRY"]["mute"], GPIO.IN)
 
 
 # used googles material for the logos https://fonts.google.com/icons?preview.text=%E2%8F%BB&preview.text_type=custom&icon.set=Material+Icons&icon.query=power
@@ -59,6 +88,11 @@ def get_config(file):
     config_dict["FONT"]["standard"] = ImageFont.truetype(font_path, 12)
     config_dict["FONT"]["small"] = ImageFont.truetype(font_path, 10)
     config_dict["DISPLAY"]["refresh"] = int(config_dict["DISPLAY"]["refresh"])
+
+    if "mute" in config_dict["HIFIBERRY"]:
+        config_dict["HIFIBERRY"]["mute"] = int(config_dict["HIFIBERRY"]["mute"])
+    if "power" in config_dict["HIFIBERRY"]:
+        config_dict["HIFIBERRY"]["power"] = int(config_dict["HIFIBERRY"]["power"])
     return config_dict
 
 
@@ -311,7 +345,7 @@ def update_images(current, image_composition, coordinates, new):
 
 
 # this skips every other mpc refresh to save power.
-def update_counter(count):
+def update_refresh_counter(count):
     skip = 1
     if count == config["DISPLAY"]["refresh"] or count == 0:
         count = 0
@@ -320,8 +354,17 @@ def update_counter(count):
     return count, skip
 
 
+def update_hifiberry_counter(count):
+    off = 0
+    if count == 5:
+        count = 0
+        off = 1
+    count += 1
+    return count, off
+
+
 def update_state(state):
-    state["count"], state["skip"] = update_counter(state["count"])
+    state["count"], state["skip"] = update_refresh_counter(state["count"])
     if state["skip"] == 1:
         return state
 
@@ -388,6 +431,26 @@ def pad_state(state):
     return state
 
 
+def save_power(state):
+    if state["status"] == 0 and state["save_power"] == 1:  # no need to render old state if nothing happens to save power
+        return 1
+
+    if state["status"] == 0 and state["save_power"] == 0:
+        state["hifiberry_shutdown_wait"], off = update_hifiberry_counter(state["hifiberry_shutdown_wait"])
+        if off == 1:
+            state["save_power"] = 1
+            disable_hifiberry()
+            draw_logo("card")  # instead of redrawing every cycle, draw once
+            return 1
+
+    if state["status"] != 0 and state["save_power"] == 1:  # reenable sound
+        enable_hifiberry()
+        state["save_power"] = 0
+        state["hifiberry_shutdown_wait"] = 0
+
+    return 0
+
+
 def main():
     image_composition = ImageComposition(device)
     coordinates = get_coordinates()
@@ -398,14 +461,14 @@ def main():
         "volume": 0,
         "id": ".",
         "count": 0,
+        "hifiberry_shutdown_wait": 0,
+        "save_power": 0,
     }
 
     try:
         while True:
             current_state = update_state(current_state)
-
-            if current_state["status"] == 0:  # no need to render old state if nothing happens to save power
-                draw_logo("card")
+            if save_power(current_state):
                 continue
 
             current_display = update_images(current_display, image_composition, coordinates, pad_state(current_state.copy()))
