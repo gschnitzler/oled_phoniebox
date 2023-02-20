@@ -40,7 +40,7 @@ GPIO.setmode(GPIO.BCM)
 def disable_hifiberry():
     if not "mute" in config["HIFIBERRY"] or not "power" in config["HIFIBERRY"]:
         return
-    
+
     GPIO.setup(config["HIFIBERRY"]["mute"], GPIO.OUT)
     sleep(0.5)
     GPIO.setup(config["HIFIBERRY"]["power"], GPIO.OUT)
@@ -153,9 +153,8 @@ def get_wifi():
 
 
 def sigterm_handler(*_):
-    draw_logo("power")
     disable_leds()
-    sleep(config["DISPLAY"]["refresh"])
+    draw_logo("power")
     sys.exit(0)
 
 
@@ -207,7 +206,7 @@ def mpc_get_data(key, data, altdata):
 def mpc_get_alt_data(data):
     alt_data = {
         "song": -1,
-        "playlistlength": -1,
+        "playlistlength": 0,
         "elapsed": 0,
         "duration": 1,  # cant be zero (division). also 0 would mean 100%. with 1, its 0%
         "file": "/dev/null",
@@ -223,8 +222,12 @@ def mpc_get_alt_data(data):
     return alt_data
 
 
-def mpc_get_track_num(key, data, alt_data):
+def mpc_get_track_num_current(key, data, alt_data):
     return int(mpc_get_data(key, data, alt_data)) + 1
+
+
+def mpc_get_track_num_total(key, data, alt_data):
+    return int(mpc_get_data(key, data, alt_data))
 
 
 def mpc_get_track_time(key, data, alt_data):
@@ -242,7 +245,7 @@ def mpc_client():
     mpdc.connect(config["MPD"]["socket"])
     # {'volume': '30', 'repeat': '0', 'random': '0', 'single': '0', 'consume': '0', 'partition': 'default', 'playlist': '12', 'playlistlength': '5', 'mixrampdb': '0.000000', 'state': 'play', 'song': '0', 'songid': '56',
     # 'time': '26:79', 'elapsed': '26.377', 'bitrate': '320', 'duration': '78.968', 'audio': '44100:24:2', 'nextsong': '1', 'nextsongid': '57'}
-    # of those, volume, playlistlength (starts with 0), state (play, pause, stop), song (currently playing song in list, starts with 0), elapsed and duration are of interest.
+    # of those, volume, playlistlength, state (play, pause, stop), song (currently playing song in list, starts with 0), elapsed and duration are of interest.
     status = mpdc.status()
     # {'file': 'Kinderlieder/Kinderlieder Klassiker/1/Track.05.mp3', 'last-modified': '2021-11-07T09:51:56Z', 'time': '87', 'duration': '87.222', 'pos': '4', 'id': '60'}
     # {'file': 'Musik/2008 For Emma, Forever Ago (L)/01. Flume.mp3', 'last-modified': '2013-07-02T12:56:55Z', 'time': '219', 'duration': '219.062', 'pos': '0', 'id': '61',
@@ -256,8 +259,8 @@ def mpc_client():
     return {
         "status": mpc_state_convert(status["state"]),
         "volume": status["volume"],
-        "track_num_current": mpc_get_track_num("song", status, alt_data),
-        "track_num_total": mpc_get_track_num("playlistlength", status, alt_data),
+        "track_num_current": mpc_get_track_num_current("song", status, alt_data),
+        "track_num_total": mpc_get_track_num_total("playlistlength", status, alt_data),
         "track_time_elapsed": mpc_get_track_time("elapsed", status, alt_data),
         "track_time_total": mpc_get_track_time("duration", status, alt_data),
         "track_time_percent": mpc_get_track_time_percent(status, alt_data),
@@ -375,28 +378,17 @@ def update_images(current, image_composition, coordinates, new):
     return current
 
 
-# this skips every other mpc refresh to save power.
-def update_refresh_counter(count):
-    skip = 1
-    if count == config["DISPLAY"]["refresh"] or count == 0:
-        count = 0
-        skip = 0
+def update_counter(max_count, count):
+    if count == max_count:
+        return 0, 1
     count += 1
-    return count, skip
-
-
-def update_hifiberry_counter(count):
-    off = 0
-    if count == 5:
-        count = 0
-        off = 1
-    count += 1
-    return count, off
+    return count, 0
 
 
 def update_state(state):
-    state["count"], state["skip"] = update_refresh_counter(state["count"])
-    if state["skip"] == 1:
+    state["count"], do_update = update_counter(2, state["count"])
+
+    if not do_update:
         return state
 
     mpc = mpc_client()
@@ -461,20 +453,22 @@ def pad_state(state):
 
     return state
 
-
+# The script utilizes 5-10% CPU on a RPi zero when updating the display. lets try to be as aggressive with power saving as possible.
+# Little delays are acceptable (sound and display). The device will mostly be idle, or playing continously without anyone interacting.
+# So I opt for saving power at all costs when idle and not going overboard during playback.
 def save_power(state):
-    if state["status"] == 0 and state["save_power"] == 1:  # no need to render old state if nothing happens to save power
+    if state["status"] != 2 and state["save_power"] == 1:  # no need to render old state if nothing happens
         return 1
 
-    if state["status"] == 0 and state["save_power"] == 0:
-        state["hifiberry_shutdown_wait"], off = update_hifiberry_counter(state["hifiberry_shutdown_wait"])
-        if off == 1:
-            state["save_power"] = 1
+    if state["status"] != 2 and state["save_power"] == 0:
+        state["hifiberry_shutdown_wait"], state["save_power"] = update_counter(10, state["hifiberry_shutdown_wait"])
+        if state["save_power"] == 1:
             disable_hifiberry()
-            draw_logo("card")  # instead of redrawing every cycle, draw once
+            if state["status"] == 0:
+                draw_logo("card")
             return 1
 
-    if state["status"] != 0 and state["save_power"] == 1:  # reenable sound
+    if state["status"] == 2 and state["save_power"] == 1:  # reenable sound
         enable_hifiberry()
         state["save_power"] = 0
         state["hifiberry_shutdown_wait"] = 0
@@ -490,6 +484,16 @@ def main():
         #
         "status": 0,
         "volume": 0,
+        "track_num_current": 0,
+        "track_num_total": 0,
+        "track_time_elapsed": "00:00",
+        "track_time_total": "00:00",
+        "track_time_percent": 0,
+        "file_path": "",
+        "artist": "",
+        "title": "",
+        "album": "",
+        "progress": 0,
         "id": ".",
         "count": 0,
         "hifiberry_shutdown_wait": 0,
@@ -500,6 +504,7 @@ def main():
         while True:
             current_state = update_state(current_state)
             if save_power(current_state):
+                sleep(config["DISPLAY"]["refresh"])  # take a nap. continue would skip that otherwise.
                 continue
 
             current_display = update_images(current_display, image_composition, coordinates, pad_state(current_state.copy()))
