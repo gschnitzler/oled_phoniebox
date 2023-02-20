@@ -31,21 +31,47 @@ import RPi.GPIO as GPIO
 # raspi-gpio set 16 ip # input
 
 GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False) # disable warning when a pin is not in IN state on first use. gpio configuration is out of scope of this script and bad initial state does happen
 
 # if the pins are not configured, do nothing
 def disable_hifiberry():
-    if "mute" in config["HIFIBERRY"] and "power" in config["HIFIBERRY"]:
-        GPIO.setup(config["HIFIBERRY"]["mute"], GPIO.OUT)
-        sleep(0.5)
-        GPIO.setup(config["HIFIBERRY"]["power"], GPIO.OUT)
+    if not "mute" in config["HIFIBERRY"] or not "power" in config["HIFIBERRY"]:
+        return
+    
+    GPIO.setup(config["HIFIBERRY"]["mute"], GPIO.OUT)
+    sleep(0.5)
+    GPIO.setup(config["HIFIBERRY"]["power"], GPIO.OUT)
 
 
 def enable_hifiberry():
-    if "mute" in config["HIFIBERRY"] and "power" in config["HIFIBERRY"]:
-        GPIO.setup(config["HIFIBERRY"]["power"], GPIO.IN)
-        sleep(0.5)
-        GPIO.setup(config["HIFIBERRY"]["mute"], GPIO.IN)
+    if not "mute" in config["HIFIBERRY"] or not "power" in config["HIFIBERRY"]:
+        return
 
+    GPIO.setup(config["HIFIBERRY"]["power"], GPIO.IN)
+    sleep(0.5)
+    GPIO.setup(config["HIFIBERRY"]["mute"], GPIO.IN)
+
+# LED control. This is a non-feature really. Originally there was a startup service to control the button leds, 
+# which used sleep timing during startup to display sort of an animation until mpd was up. What a horrible idea. 
+# More so on a single core RPi zero. Even more so with a status display at hand. Wasting 5 GPIO pins and hugely complicating the interior in the process.
+# Wiring them together (even in 2 or 3 groups) and using PWM to 'animate' something would have been acceptable. Maybe.
+# The other issue with those LEDs is... you can choose between too bright at night or too dim during the day with a hardwired resistor. Or lean towards the right brightness
+# in daylight (but which one, indoors, outdoors, summer, winter....) and then PWM them down. But based on what? An extra photodiode? Not even my phone gets it 100% right. Extra Buttons? 
+# Remember kids should be able to do that on their own. And wanting to. 
+# I could imagine wiring them together and hooking them up directly to the usb battery with a potentiometer dial somewhere on the side, going full analog and removing the need to deal with it on the RPi.
+# But at the end of the day, why bother. They add nothing in terms of UI. Not even illumination itself is a feature. I could operate my philips roller in pitch black when i was 3 years old. 
+# https://upload.wikimedia.org/wikipedia/commons/a/a7/Philips-roller.jpg
+# Using no LEDs is the best option IMHO. Still, here we are.
+def enable_leds():
+    for pin in config["LEDS"]:
+        if GPIO.gpio_function(config["LEDS"][pin]) != "GPIO.OUT":
+            GPIO.setup(config["LEDS"][pin], GPIO.OUT)
+
+
+def disable_leds():
+    for pin in config["LEDS"]:
+        if GPIO.gpio_function(config["LEDS"][pin]) != "GPIO.IN":
+            GPIO.setup(config["LEDS"][pin], GPIO.IN)
 
 # used googles material for the logos https://fonts.google.com/icons?preview.text=%E2%8F%BB&preview.text_type=custom&icon.set=Material+Icons&icon.query=power
 # then IrfanView to convert them:
@@ -89,10 +115,10 @@ def get_config(file):
     config_dict["FONT"]["small"] = ImageFont.truetype(font_path, 10)
     config_dict["DISPLAY"]["refresh"] = int(config_dict["DISPLAY"]["refresh"])
 
-    if "mute" in config_dict["HIFIBERRY"]:
-        config_dict["HIFIBERRY"]["mute"] = int(config_dict["HIFIBERRY"]["mute"])
-    if "power" in config_dict["HIFIBERRY"]:
-        config_dict["HIFIBERRY"]["power"] = int(config_dict["HIFIBERRY"]["power"])
+    for section in "HIFIBERRY", "LEDS":
+        for key in config_dict[section]:
+            config_dict[section][key] = int(config_dict[section][key])
+    
     return config_dict
 
 
@@ -124,6 +150,7 @@ def get_wifi():
 
 def sigterm_handler(*_):
     draw_logo("power")
+    disable_leds()
     sleep(config["DISPLAY"]["refresh"])
     sys.exit(0)
 
@@ -495,6 +522,7 @@ def main():
 
 if __name__ == "__main__":
     config = get_config("oled_phoniebox.conf")
+    enable_leds()
     device = get_device(config["DISPLAY"]["controller"])
     device.contrast(int(config["DISPLAY"]["contrast"]))
     logo = get_logo()
@@ -502,3 +530,4 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, sigterm_handler)
     draw_logo("music_note")
     main()
+    disable_leds()
