@@ -15,5 +15,5 @@ Here are some changes from the top of my head:
 - GPIO control to turn off hifiberry when nothing is playing
 - GPIO control to simply turn on button LEDs
 
-One mayor goal was to save power. In addition to the internal changes to achieve this, the display has a certain delay. Sufficient as a status monitor for parents, but I might make this adjustible in the future.
+One major goal was to save power. In addition to the internal changes to achieve this, the display has a certain delay. Sufficient as a status monitor for parents, but I might make this adjustable in the future.
 
